@@ -46,6 +46,11 @@ const Artwork: Array<ArtworkEntry> = [
   },
 ];
 
+interface Nip5Json {
+  names: Record<string, HexKey>;
+  relays: Record<HexKey, string[]>;
+}
+
 export default function LoginPage() {
   const dispatch = useDispatch();
   const navigate = useNavigate();
@@ -73,10 +78,20 @@ export default function LoginPage() {
     const [username, domain] = addr.split("@");
     const rsp = await fetch(`https://${domain}/.well-known/nostr.json?name=${encodeURIComponent(username)}`);
     if (rsp.ok) {
-      const data = await rsp.json();
-      const pKey = data.names[username];
+      const data: Nip5Json = await rsp.json();
+      const pKey = Object.entries(data.names)
+        .find(([k]) => k.toLowerCase() === username.toLowerCase())
+        ?.at(1);
+      const relays = pKey
+        ? (Object.entries(data.relays)
+            .find(([k]) => k.toLowerCase() === pKey.toLowerCase())
+            ?.at(1) as string[])
+        : undefined;
       if (pKey) {
-        return pKey;
+        return {
+          key: pKey,
+          relays: relays ?? [],
+        };
       }
     }
     throw new Error("User key not found");
@@ -93,10 +108,28 @@ export default function LoginPage() {
         }
       } else if (key.startsWith("npub")) {
         const hexKey = bech32ToHex(key);
-        dispatch(setPublicKey(hexKey));
+        dispatch(
+          setPublicKey({
+            key: hexKey,
+            readOnly: true,
+          })
+        );
       } else if (key.match(EmailRegex)) {
-        const hexKey = await getNip05PubKey(key);
-        dispatch(setPublicKey(hexKey));
+        const nip5 = await getNip05PubKey(key);
+        dispatch(
+          setPublicKey({
+            key: nip5.key,
+            readOnly: true,
+          })
+        );
+        if (nip5.relays.length > 0) {
+          dispatch(
+            setRelays({
+              relays: Object.fromEntries(nip5.relays.map(a => [a, { read: true, write: false }])),
+              createdAt: 1,
+            })
+          );
+        }
       } else {
         if (secp.utils.isValidPrivateKey(key)) {
           dispatch(setPrivateKey(key));
@@ -118,7 +151,12 @@ export default function LoginPage() {
 
   async function doNip07Login() {
     const pubKey = await window.nostr.getPublicKey();
-    dispatch(setPublicKey(pubKey));
+    dispatch(
+      setPublicKey({
+        key: pubKey,
+        readOnly: false,
+      })
+    );
 
     if ("getRelays" in window.nostr) {
       const relays = await window.nostr.getRelays();

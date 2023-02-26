@@ -8,6 +8,7 @@ import { ImgProxySettings } from "Hooks/useImgProxy";
 
 const PrivateKeyItem = "secret";
 const PublicKeyItem = "pubkey";
+const PublicKeySessionItem = "session";
 const NotificationsReadItem = "notifications-read";
 const UserPreferencesKey = "preferences";
 const RelayListKey = "last-relays";
@@ -20,63 +21,6 @@ export interface NotificationRequest {
   timestamp: number;
 }
 
-export interface UserPreferences {
-  /**
-   * Enable reactions / reposts / zaps
-   */
-  enableReactions: boolean;
-
-  /**
-   * Reaction emoji
-   */
-  reactionEmoji: string;
-
-  /**
-   * Automatically load media (show link only) (bandwidth/privacy)
-   */
-  autoLoadMedia: "none" | "follows-only" | "all";
-
-  /**
-   * Select between light/dark theme
-   */
-  theme: "system" | "light" | "dark";
-
-  /**
-   * Ask for confirmation when reposting notes
-   */
-  confirmReposts: boolean;
-
-  /**
-   * Automatically show the latests notes
-   */
-  autoShowLatest: boolean;
-
-  /**
-   * Show debugging menus to help diagnose issues
-   */
-  showDebugMenus: boolean;
-
-  /**
-   * File uploading service to upload attachments to
-   */
-  fileUploader: "void.cat" | "nostr.build" | "nostrimg.com";
-
-  /**
-   * Use imgproxy to optimize images
-   */
-  imgProxyConfig: ImgProxySettings | null;
-
-  /**
-   * Default page to select on load
-   */
-  defaultRootTab: "posts" | "conversations" | "global";
-
-  /**
-   * Default zap amount
-   */
-  defaultZapAmount: number;
-}
-
 export type DbType = "indexdDb" | "redux";
 
 export interface LoginStore {
@@ -84,91 +28,6 @@ export interface LoginStore {
    * Which db we will use to cache data
    */
   useDb: DbType;
-
-  /**
-   * If there is no login
-   */
-  loggedOut?: boolean;
-
-  /**
-   * Current user private key
-   */
-  privateKey?: HexKey;
-
-  /**
-   * Current users public key
-   */
-  publicKey?: HexKey;
-
-  /**
-   * If user generated key on snort
-   */
-  newUserKey: boolean;
-
-  /**
-   * All the logged in users relays
-   */
-  relays: Record<string, RelaySettings>;
-
-  /**
-   * Newest relay list timestamp
-   */
-  latestRelays: number;
-
-  /**
-   * A list of pubkeys this user follows
-   */
-  follows: HexKey[];
-
-  /**
-   * Newest relay list timestamp
-   */
-  latestFollows: number;
-
-  /**
-   * A list of tags this user follows
-   */
-  tags: string[];
-
-  /**
-   * Newest tag list timestamp
-   */
-  latestTags: number;
-
-  /**
-   * A list of event ids this user has pinned
-   */
-  pinned: HexKey[];
-
-  /**
-   * Last seen pinned list event timestamp
-   */
-  latestPinned: number;
-
-  /**
-   * A list of event ids this user has bookmarked
-   */
-  bookmarked: HexKey[];
-
-  /**
-   * Last seen bookmark list event timestamp
-   */
-  latestBookmarked: number;
-
-  /**
-   * A list of pubkeys this user has muted
-   */
-  muted: HexKey[];
-
-  /**
-   * Last seen mute list event timestamp
-   */
-  latestMuted: number;
-
-  /**
-   * A list of pubkeys this user has muted privately
-   */
-  blocked: HexKey[];
 
   /**
    * Latest notification
@@ -208,6 +67,7 @@ export const InitState = {
   publicKey: undefined,
   privateKey: undefined,
   newUserKey: false,
+  readOnly: false,
   relays: {},
   latestRelays: 0,
   follows: [],
@@ -261,15 +121,34 @@ const LoginSlice = createSlice({
         window.localStorage.removeItem(PublicKeyItem); // reset nip07 if using private key
         state.publicKey = secp.utils.bytesToHex(secp.schnorr.getPublicKey(state.privateKey));
         state.loggedOut = false;
+        state.readOnly = false;
       } else {
         state.loggedOut = true;
+        state.readOnly = true;
       }
 
       // check pub key only
+      const pubKeySession = window.localStorage.getItem(PublicKeySessionItem);
+      if (pubKeySession && !state.privateKey) {
+        const session: PubkeySession = JSON.parse(pubKeySession);
+        state.publicKey = session.key;
+        state.readOnly = session.readOnly;
+        state.loggedOut = false;
+      }
+
+      // check old format and upgrade
       const pubKey = window.localStorage.getItem(PublicKeyItem);
       if (pubKey && !state.privateKey) {
         state.publicKey = pubKey;
         state.loggedOut = false;
+
+        // assume readonly false because we cannot determine if they used Nip7 or npub
+        const upgradeToSession = {
+          key: pubKey,
+          readOnly: false,
+        } as PubkeySession;
+        window.localStorage.setItem(PublicKeySessionItem, JSON.stringify(upgradeToSession));
+        window.localStorage.removeItem(PublicKeyItem);
       }
 
       const lastRelayList = window.localStorage.getItem(RelayListKey);
@@ -314,10 +193,11 @@ const LoginSlice = createSlice({
       window.localStorage.setItem(PrivateKeyItem, action.payload);
       state.publicKey = secp.utils.bytesToHex(secp.schnorr.getPublicKey(action.payload));
     },
-    setPublicKey: (state, action: PayloadAction<HexKey>) => {
-      window.localStorage.setItem(PublicKeyItem, action.payload);
+    setPublicKey: (state, action: PayloadAction<{ key: HexKey; readOnly: boolean }>) => {
+      window.localStorage.setItem(PublicKeyItem);
       state.loggedOut = false;
-      state.publicKey = action.payload;
+      state.publicKey = action.payload.key;
+      state.readOnly = action.payload.readOnly;
     },
     setRelays: (state, action: PayloadAction<SetRelaysPayload>) => {
       const relays = action.payload.relays;
